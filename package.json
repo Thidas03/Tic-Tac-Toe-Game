@@ -1,0 +1,29 @@
+{
+  "name": "tic-tac-toe-multiplayer",
+  "version": "1.0.0",
+  "description": "Real-time multiplayer Tic Tac Toe with React, Express, and Socket.IO",
+  "main": "server.js",
+  "scripts": {
+    "server": "node server.js",
+    "server:dev": "nodemon server.js",
+    "client": "vite",
+    "client:build": "vite build",
+    "client:preview": "vite preview"
+  },
+  "dependencies": {
+    "cors": "^2.8.5",
+    "express": "^4.19.2",
+    "react": "^18.3.1",
+    "react-dom": "^18.3.1",
+    "react-router-dom": "^6.23.1",
+    "socket.io": "^4.7.5",
+    "socket.io-client": "^4.7.5"
+  },
+  "devDependencies": {
+    "@types/react": "^18.3.3",
+    "@types/react-dom": "^18.3.0",
+    "@vitejs/plugin-react": "^4.3.0",
+    "nodemon": "^3.1.0",
+    "vite": "^5.2.11"
+  }
+}
