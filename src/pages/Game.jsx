@@ -10,13 +10,26 @@ function Game() {
   const location = useLocation();
   const navigate = useNavigate();
 
-  // Retrieve player symbol passed from navigation state (fallback if direct url entry)
-  const playerSymbol = location.state?.playerSymbol || '';
+  // Retrieve player symbol passed from navigation state
+  const [playerSymbol] = useState(location.state?.playerSymbol || '');
 
+  // Game state management
   const [board, setBoard] = useState(Array(9).fill(''));
-  const [turn, setTurn] = useState('X');
-  const [gameActive, setGameActive] = useState(false);
-  const [players, setPlayers] = useState([]);
+  const [currentTurn, setCurrentTurn] = useState('X');
+  const [gameStatus, setGameStatus] = useState('waiting');
+  const [gameOver, setGameOver] = useState(false);
+
+  // Temporary error message for invalid moves
+  const [errorMessage, setErrorMessage] = useState('');
+
+  // Automatically clear error message after 2.5 seconds
+  useEffect(() => {
+    if (!errorMessage) return;
+    const timer = setTimeout(() => {
+      setErrorMessage('');
+    }, 2500);
+    return () => clearTimeout(timer);
+  }, [errorMessage]);
 
   useEffect(() => {
     // If player navigated directly without joining/creating, redirect home
@@ -25,38 +38,72 @@ function Game() {
       return;
     }
 
-    // Initialize state if we are the room creator (player X)
-    if (playerSymbol === 'X') {
-      setPlayers([{ id: socket.id, symbol: 'X' }]);
-    }
-
-    // Socket Event: Start Game (triggered when second player joins)
-    socket.on('start_game', (roomState) => {
+    const handleStartGame = (roomState) => {
       console.log('Game starting with room state:', roomState);
       setBoard(roomState.board);
-      setTurn(roomState.turn);
-      setGameActive(roomState.gameActive);
-      setPlayers(roomState.players);
-    });
-
-    // Socket Event: Opponent Left
-    socket.on('player_left', ({ message }) => {
-      console.log('Opponent left:', message);
-      setGameActive(false);
-      // Remove other players from list
-      setPlayers(prev => prev.filter(p => p.id === socket.id));
-    });
-
-    // Cleanup listeners
-    return () => {
-      socket.off('start_game');
-      socket.off('player_left');
+      setCurrentTurn(roomState.turn);
+      setGameStatus('active');
+      setGameOver(false);
     };
-  }, [roomId, playerSymbol, navigate]);
+
+    const handleUpdateBoard = ({ board, turn }) => {
+      console.log('Board updated:', board, turn);
+      setBoard(board);
+      setCurrentTurn(turn);
+    };
+
+    const handleGameOver = ({ winner }) => {
+      console.log('Game over:', winner);
+      setGameOver(true);
+      if (winner === 'draw') {
+        setGameStatus("It's a Draw!");
+      } else {
+        setGameStatus(`Player ${winner} Wins!`);
+      }
+    };
+
+    const handlePlayerLeft = ({ message }) => {
+      console.log('Player left:', message);
+      setGameOver(true);
+      setGameStatus('Opponent disconnected');
+    };
+
+    const handleInvalidMove = ({ message }) => {
+      console.log('Invalid move:', message);
+      setErrorMessage('Invalid move');
+    };
+
+    // Socket listeners registration
+    socket.on('start_game', handleStartGame);
+    socket.on('update_board', handleUpdateBoard);
+    socket.on('game_over', handleGameOver);
+    socket.on('player_left', handlePlayerLeft);
+    socket.on('invalid_move', handleInvalidMove);
+
+    // Cleanup listeners on unmount
+    return () => {
+      // Disconnect and reconnect to trigger backend cleanups and keep client ready
+      socket.disconnect();
+      socket.connect();
+
+      socket.off('start_game', handleStartGame);
+      socket.off('update_board', handleUpdateBoard);
+      socket.off('game_over', handleGameOver);
+      socket.off('player_left', handlePlayerLeft);
+      socket.off('invalid_move', handleInvalidMove);
+    };
+  }, [playerSymbol, navigate]);
 
   const handleSquareClick = (index) => {
-    console.log(`Square clicked at index: ${index}`);
-    // Emit make_move event to backend server
+    // ONLY allow move if:
+    // - game not over
+    // - cell empty
+    // - currentTurn === playerSymbol
+    if (gameOver) return;
+    if (board[index] !== '') return;
+    if (currentTurn !== playerSymbol) return;
+
+    // Emit: make_move
     socket.emit('make_move', { roomId, index });
   };
 
@@ -64,17 +111,27 @@ function Game() {
     navigate('/');
   };
 
+  // Determine if board clicks should be disabled
+  const isBoardDisabled = gameOver || gameStatus === 'waiting' || currentTurn !== playerSymbol;
+
   return (
     <div className="glass-card">
+      {/* Temporary Alert Banner for Invalid Moves */}
+      {errorMessage && <div className="alert-banner">{errorMessage}</div>}
+
       <RoomPanel roomId={roomId} playerSymbol={playerSymbol} />
 
-      <Board board={board} onSquareClick={handleSquareClick} />
+      <Board 
+        board={board} 
+        onSquareClick={handleSquareClick} 
+        disabled={isBoardDisabled} 
+      />
 
       <StatusBar
-        gameActive={gameActive}
-        playersCount={players.length}
-        turn={turn}
+        currentTurn={currentTurn}
         playerSymbol={playerSymbol}
+        gameStatus={gameStatus}
+        gameOver={gameOver}
       />
 
       <button

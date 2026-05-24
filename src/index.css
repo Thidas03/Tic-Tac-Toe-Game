@@ -43,6 +43,7 @@ body {
 
 /* Glassmorphic Container Card */
 .glass-card {
+  position: relative;
   background: var(--color-glass-bg);
   border: 1px solid var(--color-glass-border);
   backdrop-filter: blur(16px);
@@ -227,8 +228,9 @@ p {
   grid-template-columns: repeat(3, 1fr);
   grid-template-rows: repeat(3, 1fr);
   gap: 12px;
-  width: 320px;
-  height: 320px;
+  width: 100%;
+  max-width: 340px;
+  aspect-ratio: 1 / 1;
   margin: 1rem 0;
 }
 
@@ -249,17 +251,27 @@ p {
   box-shadow: inset 0 2px 4px rgba(0, 0, 0, 0.3);
 }
 
-.square:hover {
+.square:not(:disabled):hover {
   background: rgba(255, 255, 255, 0.04);
   border-color: rgba(255, 255, 255, 0.15);
   transform: scale(1.03);
 }
 
-.square:active {
+.square:not(:disabled):active {
   transform: scale(0.97);
 }
 
-/* Custom Mark Colors */
+.square:disabled {
+  cursor: not-allowed;
+  opacity: 0.65;
+}
+
+/* Custom Mark Colors & Animations */
+.mark-x, .mark-o {
+  display: inline-block;
+  animation: popScale 0.3s cubic-bezier(0.175, 0.885, 0.32, 1.275) forwards;
+}
+
 .mark-x {
   color: var(--color-cyan);
   text-shadow: 0 0 12px rgba(6, 182, 212, 0.4);
@@ -268,6 +280,49 @@ p {
 .mark-o {
   color: var(--color-pink);
   text-shadow: 0 0 12px rgba(236, 72, 153, 0.4);
+}
+
+@keyframes popScale {
+  0% {
+    opacity: 0;
+    transform: scale(0.4);
+  }
+  100% {
+    opacity: 1;
+    transform: scale(1);
+  }
+}
+
+/* Invalid Move Alert Banner */
+.alert-banner {
+  position: absolute;
+  top: 1rem;
+  left: 50%;
+  transform: translateX(-50%);
+  background: rgba(236, 72, 153, 0.15);
+  border: 1px solid rgba(236, 72, 153, 0.35);
+  color: #f472b6;
+  padding: 0.6rem 1.25rem;
+  border-radius: 12px;
+  font-weight: 700;
+  font-size: 0.875rem;
+  backdrop-filter: blur(12px);
+  -webkit-backdrop-filter: blur(12px);
+  box-shadow: 0 8px 24px rgba(236, 72, 153, 0.25);
+  animation: slideDownFade 0.3s cubic-bezier(0.16, 1, 0.3, 1) forwards;
+  z-index: 100;
+  pointer-events: none;
+}
+
+@keyframes slideDownFade {
+  0% {
+    opacity: 0;
+    transform: translate(-50%, -8px) scale(0.95);
+  }
+  100% {
+    opacity: 1;
+    transform: translate(-50%, 0) scale(1);
+  }
 }
 
 /* Status Bar Info */

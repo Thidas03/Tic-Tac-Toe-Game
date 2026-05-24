@@ -1,7 +1,7 @@
 import React from 'react';
 import Square from './Square.jsx';
 
-function Board({ board, onSquareClick }) {
+function Board({ board, onSquareClick, disabled }) {
   return (
     <div className="board-grid">
       {board.map((value, index) => (
@@ -9,6 +9,7 @@ function Board({ board, onSquareClick }) {
           key={index}
           value={value}
           onClick={() => onSquareClick(index)}
+          disabled={disabled || value !== ''}
         />
       ))}
     </div>
