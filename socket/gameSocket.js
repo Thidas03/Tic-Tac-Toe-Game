@@ -36,13 +36,15 @@ module.exports = (io) => {
     socket.on("create_room", () => {
       const roomId = getUniqueRoomId();
 
-      // Initialize room structure
+      // Initialize room structure with strict 2-player model
       rooms[roomId] = {
-        roomId: roomId,
-        players: [{ id: socket.id, symbol: "X" }],
+        players: {
+          X: socket.id,
+          O: null
+        },
         board: Array(9).fill(""),
         turn: "X",
-        gameActive: false
+        status: "waiting"
       };
 
       // Track details on socket
@@ -59,23 +61,44 @@ module.exports = (io) => {
     });
 
     // 2. Join Room Handler
-    socket.on("join_room", (roomId) => {
-      const targetRoomId = roomId ? roomId.trim().toUpperCase() : "";
+    socket.on("join_room", (data) => {
+      // Support input as { roomId } per spec, and also fallback to string for robust handling
+      let roomIdStr = "";
+      if (data && typeof data === "object") {
+        roomIdStr = data.roomId;
+      } else if (typeof data === "string") {
+        roomIdStr = data;
+      }
+
+      const targetRoomId = roomIdStr ? roomIdStr.trim().toUpperCase() : "";
       const room = rooms[targetRoomId];
 
+      // VALIDATION: Room must exist
       if (!room) {
+        console.log(`Join attempt failed: Room ${targetRoomId} not found.`);
+        socket.emit("room_not_found", { message: "Room not found" });
         socket.emit("error_room_not_found", { message: "Room not found" });
         return;
       }
 
-      if (room.players.length >= 2) {
+      // VALIDATION: Room must NOT be full (and must have empty O slot)
+      if ((room.players.X && room.players.O) || room.players.O !== null) {
+        console.log(`Join attempt failed: Room ${targetRoomId} is full.`);
+        socket.emit("room_full", { message: "Room is full" });
         socket.emit("error_room_full", { message: "Room is full" });
         return;
       }
 
-      // Add second player as "O"
-      room.players.push({ id: socket.id, symbol: "O" });
-      room.gameActive = true;
+      // VALIDATION: Prevent joining same room twice (prevent duplicate X/O assignment)
+      if (room.players.X === socket.id || room.players.O === socket.id) {
+        console.log(`Join attempt failed: Socket ${socket.id} already in room.`);
+        socket.emit("invalid_move", { message: "You are already in this room" });
+        return;
+      }
+
+      // Assign socket.id to player O
+      room.players.O = socket.id;
+      room.status = "playing";
 
       // Track details on socket
       socket.roomId = targetRoomId;
@@ -86,11 +109,44 @@ module.exports = (io) => {
 
       console.log(`Player O (${socket.id}) joined room: ${targetRoomId}`);
 
-      // Emit room_joined to creator/joiner
+      // Emit room_joined event to the joiner
       socket.emit("room_joined", { roomId: targetRoomId, player: "O" });
 
-      // Emit start_game with room state to all room players
-      io.to(targetRoomId).emit("start_game", room);
+      // THEN EMIT TO BOTH PLAYERS: start_game
+      // X player socket gets "X"
+      if (room.players.X) {
+        io.to(room.players.X).emit("start_game", {
+          roomId: targetRoomId,
+          symbol: "X",
+          board: room.board,
+          turn: room.turn
+        });
+      }
+
+      // O player socket gets "O"
+      if (room.players.O) {
+        io.to(room.players.O).emit("start_game", {
+          roomId: targetRoomId,
+          symbol: "O",
+          board: room.board,
+          turn: room.turn
+        });
+      }
+
+      // Emit system chat notifications that opponent joined and game started
+      const timeStr = new Date().toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
+      io.to(targetRoomId).emit("receive_message", {
+        user: "System",
+        message: "Player O joined the room.",
+        time: timeStr,
+        isSystem: true
+      });
+      io.to(targetRoomId).emit("receive_message", {
+        user: "System",
+        message: "Game started! Player X vs Player O",
+        time: timeStr,
+        isSystem: true
+      });
     });
 
     // 3. Make Move Handler
@@ -106,7 +162,7 @@ module.exports = (io) => {
       }
 
       // Validation 2: Game is active
-      if (!room.gameActive) {
+      if (room.status !== "playing") {
         console.log(`Invalid move attempt: Game in room ${targetRoomId} is not active. (Socket: ${socket.id})`);
         socket.emit("invalid_move", { message: "Game is not active" });
         return;
@@ -141,7 +197,7 @@ module.exports = (io) => {
       const winner = checkWinner(room.board);
 
       if (winner) {
-        room.gameActive = false;
+        room.status = "waiting";
         // Broadcast final board update
         io.to(targetRoomId).emit("update_board", {
           board: room.board,
@@ -161,31 +217,143 @@ module.exports = (io) => {
       }
     });
 
-    // 4. Disconnect Handler
-    socket.on("disconnect", () => {
-      console.log("User disconnected:", socket.id);
+    // 3.5. Request Restart Handler
+    socket.on("request_restart", () => {
+      const roomId = socket.roomId;
+      if (!roomId || !rooms[roomId]) return;
 
+      const room = rooms[roomId];
+
+      if (!room.restartRequests) {
+        room.restartRequests = new Set();
+      }
+
+      room.restartRequests.add(socket.playerSymbol);
+
+      console.log(`Restart requested in room ${roomId} by Player ${socket.playerSymbol}`);
+
+      // Notify all players in room of the restart request
+      io.to(roomId).emit("restart_requested", {
+        requestedBy: socket.playerSymbol,
+        totalRequests: room.restartRequests.size
+      });
+
+      // If both players have requested, reset game
+      if (room.restartRequests.size === 2) {
+        room.board = Array(9).fill("");
+        room.turn = "X";
+        room.status = "playing";
+        room.restartRequests.clear();
+
+        // Send start_game to both to reset client state
+        if (room.players.X) {
+          io.to(room.players.X).emit("start_game", {
+            roomId: roomId,
+            symbol: "X",
+            board: room.board,
+            turn: room.turn
+          });
+        }
+        if (room.players.O) {
+          io.to(room.players.O).emit("start_game", {
+            roomId: roomId,
+            symbol: "O",
+            board: room.board,
+            turn: room.turn
+          });
+        }
+
+        // Send chat notification
+        const timeStr = new Date().toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
+        io.to(roomId).emit("receive_message", {
+          user: "System",
+          message: "Game restarted! Good luck!",
+          time: timeStr,
+          isSystem: true
+        });
+      }
+    });
+
+
+    // Helper to clean up room when a socket leaves or disconnects
+    const handleLeave = () => {
       const roomId = socket.roomId;
       if (roomId && rooms[roomId]) {
         const room = rooms[roomId];
 
-        // Remove player from the room players list
-        room.players = room.players.filter((p) => p.id !== socket.id);
+        // Set the leaving player's slot to null
+        if (socket.playerSymbol === "X") {
+          room.players.X = null;
+        } else if (socket.playerSymbol === "O") {
+          room.players.O = null;
+        }
+        
         console.log(`Player ${socket.playerSymbol} (${socket.id}) left room: ${roomId}`);
 
-        if (room.players.length === 0) {
-          // If room empty -> delete room
+        // Clear restart requests if any
+        if (room.restartRequests) {
+          room.restartRequests.clear();
+        }
+
+
+        // If both slots are empty (null), delete the room
+        if (!room.players.X && !room.players.O) {
           delete rooms[roomId];
           console.log(`Room ${roomId} deleted as it is empty.`);
         } else {
-          // If one player left -> pause gameActive & emit player_left
-          room.gameActive = false;
+          // Pause active gameplay
+          room.status = "waiting";
+
+          // Emit player_left to pause game
           io.to(roomId).emit("player_left", {
             message: `Player ${socket.playerSymbol} left the room. Game paused.`
           });
-          console.log(`Room ${roomId} game paused. Remaining players: ${room.players.length}`);
+
+          // Emit system chat notification when player disconnects or leaves
+          const timeStr = new Date().toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
+          io.to(roomId).emit("receive_message", {
+            user: "System",
+            message: `Player ${socket.playerSymbol} left the room.`,
+            time: timeStr,
+            isSystem: true
+          });
+
+          console.log(`Room ${roomId} game paused. A remaining player exists.`);
         }
+
+        // Clear socket properties for clean state
+        socket.roomId = null;
+        socket.playerSymbol = null;
       }
+    };
+
+    // 4. Leave Room and Disconnect Handlers
+    socket.on("leave_room", handleLeave);
+    socket.on("disconnect", handleLeave);
+
+    // 5. Send Message Handler
+    socket.on("send_message", ({ roomId, user, message }) => {
+      const targetRoomId = roomId ? roomId.trim().toUpperCase() : "";
+      if (!targetRoomId || !message) return;
+
+      const payload = {
+        user,
+        message,
+        time: new Date().toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })
+      };
+
+      io.to(targetRoomId).emit("receive_message", payload);
+    });
+
+    // 6. Typing Handler
+    socket.on("typing", ({ roomId, user, isTyping }) => {
+      const targetRoomId = roomId ? roomId.trim().toUpperCase() : "";
+      if (!targetRoomId) return;
+
+      socket.to(targetRoomId).emit("player_typing", {
+        user,
+        isTyping
+      });
     });
   });
 };

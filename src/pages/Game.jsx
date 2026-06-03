@@ -4,6 +4,31 @@ import { socket } from '../socket/socket.js';
 import RoomPanel from '../components/RoomPanel.jsx';
 import Board from '../components/Board.jsx';
 import StatusBar from '../components/StatusBar.jsx';
+import Chat from '../components/Chat.jsx';
+
+const saveMatchToHistory = ({ roomId, playerSymbol, winner, reason }) => {
+  try {
+    const history = JSON.parse(localStorage.getItem('tic_tac_toe_history') || '[]');
+    let result = 'draw';
+    if (winner !== 'draw') {
+      result = winner === playerSymbol ? 'win' : 'loss';
+    }
+    const newMatch = {
+      id: Date.now().toString(),
+      roomId,
+      playerSymbol,
+      opponentSymbol: playerSymbol === 'X' ? 'O' : 'X',
+      winner,
+      result,
+      reason,
+      timestamp: new Date().toISOString()
+    };
+    const updatedHistory = [newMatch, ...history].slice(0, 50);
+    localStorage.setItem('tic_tac_toe_history', JSON.stringify(updatedHistory));
+  } catch (error) {
+    console.error('Error saving match history:', error);
+  }
+};
 
 function Game() {
   const { roomId } = useParams();
@@ -13,11 +38,15 @@ function Game() {
   // Retrieve player symbol passed from navigation state
   const [playerSymbol] = useState(location.state?.playerSymbol || '');
 
-  // Game state management
-  const [board, setBoard] = useState(Array(9).fill(''));
-  const [currentTurn, setCurrentTurn] = useState('X');
-  const [gameStatus, setGameStatus] = useState('waiting');
+  // Game state management - pre-initialize with values from navigation state
+  const [board, setBoard] = useState(location.state?.initialBoard || Array(9).fill(''));
+  const [currentTurn, setCurrentTurn] = useState(location.state?.initialTurn || 'X');
+  const [gameStatus, setGameStatus] = useState(location.state?.gameStatus || 'waiting');
   const [gameOver, setGameOver] = useState(false);
+
+  // Rematch request states
+  const [requestedRestart, setRequestedRestart] = useState(false);
+  const [opponentWantsRestart, setOpponentWantsRestart] = useState(false);
 
   // Temporary error message for invalid moves
   const [errorMessage, setErrorMessage] = useState('');
@@ -39,11 +68,13 @@ function Game() {
     }
 
     const handleStartGame = (roomState) => {
-      console.log('Game starting with room state:', roomState);
+      console.log('Game starting/restarting with room state:', roomState);
       setBoard(roomState.board);
       setCurrentTurn(roomState.turn);
       setGameStatus('active');
       setGameOver(false);
+      setRequestedRestart(false);
+      setOpponentWantsRestart(false);
     };
 
     const handleUpdateBoard = ({ board, turn }) => {
@@ -60,11 +91,28 @@ function Game() {
       } else {
         setGameStatus(`Player ${winner} Wins!`);
       }
+      
+      saveMatchToHistory({
+        roomId,
+        playerSymbol,
+        winner,
+        reason: winner === 'draw' ? 'draw' : `${winner}_won`
+      });
     };
 
     const handlePlayerLeft = ({ message }) => {
       console.log('Player left:', message);
-      setGameOver(true);
+      setGameOver((prevGameOver) => {
+        if (!prevGameOver) {
+          saveMatchToHistory({
+            roomId,
+            playerSymbol,
+            winner: playerSymbol,
+            reason: 'opponent_disconnected'
+          });
+        }
+        return true;
+      });
       setGameStatus('Opponent disconnected');
     };
 
@@ -73,26 +121,31 @@ function Game() {
       setErrorMessage('Invalid move');
     };
 
+    const handleRestartRequested = ({ requestedBy, totalRequests }) => {
+      console.log('Restart requested by:', requestedBy, 'total:', totalRequests);
+      if (requestedBy !== playerSymbol) {
+        setOpponentWantsRestart(true);
+      }
+    };
+
     // Socket listeners registration
     socket.on('start_game', handleStartGame);
     socket.on('update_board', handleUpdateBoard);
     socket.on('game_over', handleGameOver);
     socket.on('player_left', handlePlayerLeft);
     socket.on('invalid_move', handleInvalidMove);
+    socket.on('restart_requested', handleRestartRequested);
 
     // Cleanup listeners on unmount
     return () => {
-      // Disconnect and reconnect to trigger backend cleanups and keep client ready
-      socket.disconnect();
-      socket.connect();
-
       socket.off('start_game', handleStartGame);
       socket.off('update_board', handleUpdateBoard);
       socket.off('game_over', handleGameOver);
       socket.off('player_left', handlePlayerLeft);
       socket.off('invalid_move', handleInvalidMove);
+      socket.off('restart_requested', handleRestartRequested);
     };
-  }, [playerSymbol, navigate]);
+  }, [playerSymbol, roomId, navigate]);
 
   const handleSquareClick = (index) => {
     // ONLY allow move if:
@@ -108,39 +161,66 @@ function Game() {
   };
 
   const handleLeaveRoom = () => {
+    socket.emit('leave_room');
     navigate('/');
+  };
+
+  const handleTryAgain = () => {
+    socket.emit('request_restart');
+    setRequestedRestart(true);
   };
 
   // Determine if board clicks should be disabled
   const isBoardDisabled = gameOver || gameStatus === 'waiting' || currentTurn !== playerSymbol;
 
   return (
-    <div className="glass-card">
-      {/* Temporary Alert Banner for Invalid Moves */}
-      {errorMessage && <div className="alert-banner">{errorMessage}</div>}
+    <div className="game-container">
+      <div className="glass-card game-main-card">
+        {/* Temporary Alert Banner for Invalid Moves */}
+        {errorMessage && <div className="alert-banner">{errorMessage}</div>}
 
-      <RoomPanel roomId={roomId} playerSymbol={playerSymbol} />
+        <RoomPanel roomId={roomId} playerSymbol={playerSymbol} />
 
-      <Board 
-        board={board} 
-        onSquareClick={handleSquareClick} 
-        disabled={isBoardDisabled} 
-      />
+        <Board 
+          board={board} 
+          onSquareClick={handleSquareClick} 
+          disabled={isBoardDisabled} 
+        />
 
-      <StatusBar
-        currentTurn={currentTurn}
-        playerSymbol={playerSymbol}
-        gameStatus={gameStatus}
-        gameOver={gameOver}
-      />
+        <StatusBar
+          currentTurn={currentTurn}
+          playerSymbol={playerSymbol}
+          gameStatus={gameStatus}
+          gameOver={gameOver}
+        />
 
-      <button
-        onClick={handleLeaveRoom}
-        className="btn btn-secondary"
-        style={{ marginTop: '0.5rem', width: 'auto', padding: '0.6rem 1.2rem' }}
-      >
-        Leave Room
-      </button>
+        <div style={{ display: 'flex', gap: '0.75rem', width: '100%', justifyContent: 'center', marginTop: '0.5rem' }}>
+          {gameOver && (
+            <button
+              onClick={handleTryAgain}
+              disabled={requestedRestart}
+              className="btn btn-primary"
+              style={{ width: 'auto', padding: '0.6rem 1.2rem', marginTop: 0 }}
+            >
+              {requestedRestart 
+                ? 'Waiting for Opponent...' 
+                : opponentWantsRestart 
+                  ? 'Accept Rematch!' 
+                  : 'Try Again'}
+            </button>
+          )}
+
+          <button
+            onClick={handleLeaveRoom}
+            className="btn btn-secondary"
+            style={{ width: 'auto', padding: '0.6rem 1.2rem', marginTop: 0 }}
+          >
+            Leave Room
+          </button>
+        </div>
+      </div>
+
+      <Chat roomId={roomId} playerSymbol={playerSymbol} />
     </div>
   );
 }
