@@ -3,6 +3,7 @@ const http = require("http");
 const { Server } = require("socket.io");
 const cors = require("cors");
 const path = require("path");
+const fs = require("fs");
 const initGameSocket = require("./socket/gameSocket");
 
 const app = express();
@@ -40,13 +41,18 @@ const io = new Server(server, {
 // Connect game socket listeners
 initGameSocket(io);
 
-// Serve static assets from the Vite frontend build folder
-app.use(express.static(path.join(__dirname, "dist")));
-
-// Fallback route for React Router (Single Page Application)
-app.get("*", (req, res) => {
-  res.sendFile(path.join(__dirname, "dist", "index.html"));
-});
+// Check if static frontend files exist
+const distPath = path.join(__dirname, "dist");
+if (fs.existsSync(distPath)) {
+  app.use(express.static(distPath));
+  app.get("*", (req, res) => {
+    res.sendFile(path.join(distPath, "index.html"));
+  });
+} else {
+  app.get("*", (req, res) => {
+    res.send("Tic Tac Toe Multiplayer Backend is running.");
+  });
+}
 
 // Start server on PORT 5000
 const PORT = process.env.PORT || 5000;
